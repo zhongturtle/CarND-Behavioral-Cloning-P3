@@ -105,7 +105,7 @@ if __name__ == '__main__':
         'image_folder',
         type=str,
         nargs='?',
-        default='',
+        default='image_folder',
         help='Path to image folder. This is where the images from the run will be saved.'
     )
     args = parser.parse_args()
