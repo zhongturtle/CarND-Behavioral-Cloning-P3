@@ -1,67 +1,97 @@
-import csv
-import cv2
-import numpy as np
+import pandas as pd 
+import numpy as np 
+from sklearn.model_selection import train_test_split 
+from keras.models import Sequential
+from keras.optimizers import Adam
+from keras.callbacks import ModelCheckpoint
+from keras.layers import Lambda, Conv2D, MaxPooling2D, Dropout, Dense, Flatten
+import argparse
+import os
 
-lines = []
-with open('data/driving_log.csv') as csvfile:
-    reader = csv.reader(csvfile)
-    for line in reader:
-        lines.append(line)
-        
-images = []
-measurements = []
-tick = 0
+np.random.seed(0)
 
-for line in lines:
-	for i in range(3):
-		if tick ==0:
-                    print("Ind : " +str(i))
-                    
-		if i==0:
-			correction=0
-		elif i==1:
-			correction=0.04
-		elif i==2:
-			correction=-0.04
-		source_path = line[i]
-		#print(source_path)
-		filename=source_path.split('\\')[-1]
-		current_path = 'data/IMG' + filename
-		image=cv2.imread(current_path)
-		images.append(image)
-		measurement = float(line[3])+correction
-		#flip and append
-		measurements.append(measurement)
-		image_flip=np.fliplr(image)
-		images.append(image_flip)
-		measurements.append(-measurement)
-	tick=tick+1
-	
-   
-X_train = np.array(images)
-y_train = np.array(measurements)
+INPUT_SHAPE = (66, 200, 3)
+def batch_generator(data_dir, image_paths, steering_angles, batch_size, is_training):
 
-from keras.models import Sequential, Model
-from keras.layers import Flatten, Dense, Lambda, Cropping2D #Lambda Wraps arbitrary expression as a Layer object. 
-from keras.layers.convolutional import Convolution2D
-from keras.layers import MaxPooling2D
+    images = np.empty([batch_size, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS])
+    steers = np.empty(batch_size)
+    while True:
+        i = 0
+        for index in np.random.permutation(image_paths.shape[0]):
+            center, left, right = image_paths[index]
+            steering_angle = steering_angles[index]
+            if is_training and np.random.rand() < 0.6:
+                image, steering_angle = augument(data_dir, center, left, right, steering_angle)
+            else:
+                image = load_image(data_dir, center) 
+            images[i] = preprocess(image)
+            steers[i] = steering_angle
+            i += 1
+            if i == batch_size:
+                break
+        yield images, steers
 
-model = Sequential()
-model.add(Lambda(lambda x:x/255.0 - 0.5, input_shape=(160,320,3))) #((normalise & mean center))
-model.add(Cropping2D(cropping=((58,20),(0,0)))) #crop distracting details increas to 20 to focus further out
-model.add(Convolution2D(24,5,5,subsample=(2,2),activation="relu")) #Convolution2D(nb_filter, nb_row, nb_col, init='glorot_uniform', activation=None, weights=None, border_mode='valid', subsample=(1, 1), dim_ordering='default', W_regularizer=None, b_regularizer=None, activity_regularizer=None, W_constraint=None, b_constraint=None, bias=True)
-model.add(Convolution2D(36,5,5,subsample=(2,2),activation="relu"))
-model.add(Convolution2D(48,5,5,subsample=(2,2),activation="relu"))
-model.add(Convolution2D(64,3,3,activation="relu"))
-model.add(Convolution2D(64,3,3,activation="relu"))
-model.add(Flatten())
-model.add(Dense(100))
-model.add(Dense(50))
-model.add(Dense(10))
-model.add(Dense(1))
+def s2b(s):
+    """
+    Converts a string to boolean value
+    """
+    s = s.lower()
+    return s == 'true' or s == 'yes' or s == 'y' or s == '1'
 
-model.compile(loss='mse', optimizer='adam')
-model.fit(X_train, y_train, validation_split=0.2,shuffle=True, nb_epoch=5)
 
-model.save('modelvpt04bbbrbc.h5')
-print("fin")
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Behavioral Cloning Training Program')
+    parser.add_argument('-d', help='data directory',        dest='data_dir',          type=str,   default='data')
+    parser.add_argument('-t', help='test size fraction',    dest='test_size',         type=float, default=0.2)
+    parser.add_argument('-k', help='drop out probability',  dest='keep_prob',         type=float, default=0.5)
+    parser.add_argument('-n', help='number of epochs',      dest='nb_epoch',          type=int,   default=10)
+    parser.add_argument('-s', help='samples per epoch',     dest='samples_per_epoch', type=int,   default=20000)
+    parser.add_argument('-b', help='batch size',            dest='batch_size',        type=int,   default=40)
+    parser.add_argument('-o', help='save best models only', dest='save_best_only',    type=s2b,   default='true')
+    parser.add_argument('-l', help='learning rate',         dest='learning_rate',     type=float, default=1.0e-4)
+    args = parser.parse_args()
+
+    print('-' * 30)
+    print('Parameters')
+    print('-' * 30)
+    for key, value in vars(args).items():
+        print('{:<20} := {}'.format(key, value))
+    print('-' * 30)
+
+    data_df = pd.read_csv(os.path.join(os.getcwd(), args.data_dir, 'driving_log.csv'), names=['center', 'left', 'right', 'steering', 'throttle', 'reverse', 'speed'])
+
+    X = data_df[['center', 'left', 'right']].values
+    y = data_df['steering'].values
+    X_train, X_valid, y_train, y_valid = train_test_split(X, y, test_size=args.test_size, random_state=0)
+    data = X_train, X_valid, y_train, y_valid
+    model = Sequential()
+    model.add(Lambda(lambda x: x/127.5-1.0, input_shape=INPUT_SHAPE))
+    model.add(Conv2D(24, 5, 5, activation='elu', subsample=(2, 2)))
+    model.add(Conv2D(36, 5, 5, activation='elu', subsample=(2, 2)))
+    model.add(Conv2D(48, 5, 5, activation='elu', subsample=(2, 2)))
+    model.add(Conv2D(64, 3, 3, activation='elu'))
+    model.add(Conv2D(64, 3, 3, activation='elu'))
+    model.add(Dropout(args.keep_prob))
+    model.add(Flatten())
+    model.add(Dense(100, activation='elu'))
+    model.add(Dense(50, activation='elu'))
+    model.add(Dense(10, activation='elu'))
+    model.add(Dense(1))
+    model.summary()
+
+    checkpoint = ModelCheckpoint('model-{epoch:03d}.h5',
+                                 monitor='val_loss',
+                                 verbose=0,
+                                 save_best_only=args.save_best_only,
+                                 mode='auto')
+
+    model.compile(loss='mean_squared_error', optimizer=Adam(lr=args.learning_rate))
+
+    model.fit_generator(batch_generator(args.data_dir, X_train, y_train, args.batch_size, True),
+                        args.samples_per_epoch,
+                        args.nb_epoch,
+                        max_q_size=1,
+                        validation_data=batch_generator(args.data_dir, X_valid, y_valid, args.batch_size, False),
+                        nb_val_samples=len(X_valid),
+                        callbacks=[checkpoint],
+                        verbose=1)
